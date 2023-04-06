@@ -1,6 +1,8 @@
 #![feature(async_closure)]
 #![feature(int_roundings)]
 #![feature(trivial_bounds)]
+#![feature(iter_array_chunks)]
+#![feature(array_chunks)]
 
 mod colors;
 mod dominant;
@@ -32,11 +34,22 @@ struct Arguments {
     #[arg(long, default_value_t = 3)]
     sample_height: u32,
 
+    /// The supported colour depths. ANSI still requires truecolor support due to the nature of
+    /// the way I implemented colours in the code, and I am much too lazy to change it.
     #[arg(short, long, value_enum, default_value_t = ColourDepth::Rgb24)]
-    depth: ColourDepth
+    depth: ColourDepth,
+
+    #[arg(short, long, default_value_t = false)]
+    no_background: bool,
+
+    #[arg(short, long, default_value_t = 1.0f32)]
+    sigma: f32,
+
+    #[arg(short, long, default_value_t = 0.7f32)]
+    scalar: f32
 }
 
-const EDGE_DETAIL: [u8; 92] = *b" `.-':_,^=;><+!rc*/z?sLTv)J7(|Fi{C}fI31tlu[neoZ5Yxjya]2ESwqkP6h9d4VpOGbUAKXHm8RD#$Bg0MNWQ%&@";
+const EDGE_DETAIL: [u8; 92] = *b" .`'-:_,^=;><+!rc*/z?sLTv)J7(|Fi{C}fI31tlu[neoZ5Yxjya]2ESwqkP6h9d4VpOGbUAKXHm8RD#$Bg0MNWQ%&@";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,11 +57,14 @@ async fn main() -> anyhow::Result<()> {
 
     let img = image::open(Path::new(&args.file_name))?;
 
-    let img_blur = img.blur(2.0).blur(0.75);
+    let sigma = args.sigma;
+    let scalar = args.scalar;
+
+    let img_blur = img.blur(scalar.powf(sigma));
 
     let mut img_blur = img_blur.pixels();
 
-    let edges: ImageBuffer<image::Rgb<u8>, _> = ImageBuffer::from_vec(img.width(), img.height(), img.blur(2.0).pixels().flat_map(|pix| {
+    let edges: ImageBuffer<image::Rgb<u8>, _> = ImageBuffer::from_vec(img.width(), img.height(), img.blur(sigma).pixels().flat_map(|pix| {
         let (_, _, image::Rgba([r1, g1, b1, _])) = img_blur.next().unwrap();
         let (_, _, image::Rgba([r2, g2, b2, _])) = pix;
 
@@ -134,19 +150,36 @@ async fn main() -> anyhow::Result<()> {
 
             let edge_char_idx = (edge_avg as f64 / 255.0) * (EDGE_DETAIL.len() - 1) as f64;
 
-            let edge_char = EDGE_DETAIL[(edge_char_idx as usize).min(EDGE_DETAIL.len() - 1)] as char;
+            let mut edge_char = EDGE_DETAIL[(edge_char_idx as usize).min(EDGE_DETAIL.len() - 1)] as char;
 
-            format!(
-                "{}{}",
-                edge_char
-                    .truecolor(secondary_r, secondary_g, secondary_b)
-                    .on_truecolor(dominant_r, dominant_g, dominant_b),
-                if x == output_text_width - 1 {
-                    '\n'
-                } else {
-                    '\x00'
+            if args.no_background {
+                if edge_char == EDGE_DETAIL[0] as char {
+                    edge_char = EDGE_DETAIL[1] as char;
                 }
-            )
+
+                format!(
+                    "{}{}",
+                    edge_char
+                        .truecolor(dominant_r, dominant_g, dominant_b),
+                    if x == output_text_width - 1 {
+                        '\n'
+                    } else {
+                        '\x00'
+                    }
+                )
+            } else {
+                format!(
+                    "{}{}",
+                    edge_char
+                        .truecolor(secondary_r, secondary_g, secondary_b)
+                        .on_truecolor(dominant_r, dominant_g, dominant_b),
+                    if x == output_text_width - 1 {
+                        '\n'
+                    } else {
+                        '\x00'
+                    }
+                )
+            }
         })
     }).collect();
 

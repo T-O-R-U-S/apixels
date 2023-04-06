@@ -68,6 +68,11 @@ pub trait Colour {
         //
         // distance.try_into().expect("Failed conversion from `rust_decimal` Decimal type to f64")
     }
+
+    fn colour(r: u8, g: u8, b: u8) -> Self
+    where Self: Sized {
+        Self::from_rgb8((r, g, b))
+    }
 }
 
 impl Colour for Rgb24 {
