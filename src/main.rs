@@ -1,16 +1,24 @@
+#![feature(async_closure)]
 #![feature(int_roundings)]
+#![feature(trivial_bounds)]
 
-use image::io::Reader as ImageReader;
+mod colors;
+mod dominant;
+
+use std::path::Path;
 use clap::Parser;
 use clap::ValueEnum;
-use image::{GenericImageView, Rgb, Rgba};
+use image::{DynamicImage, GenericImageView, ImageBuffer, Pixel};
 use owo_colors::OwoColorize;
 use rayon::prelude::*;
+use crate::colors::{Colour, Monochrome, Rgb24, Rgb565, Ansi};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum ColourDepth {
     Monochrome,
-    Rgb8,
+    Rgb24,
+    Rgb16,
+    Ansi
 }
 
 #[derive(Parser)]
@@ -19,88 +27,128 @@ struct Arguments {
     file_name: String,
 
     #[arg(long, default_value_t = 2)]
-    sample_width: usize,
+    sample_width: u32,
 
     #[arg(long, default_value_t = 3)]
-    sample_height: usize,
+    sample_height: u32,
 
-    #[arg(short, long, value_enum, default_value_t = ColourDepth::Rgb8)]
+    #[arg(short, long, value_enum, default_value_t = ColourDepth::Rgb24)]
     depth: ColourDepth
 }
 
-fn main() -> anyhow::Result<()> {
+const EDGE_DETAIL: [u8; 92] = *b" `.-':_,^=;><+!rc*/z?sLTv)J7(|Fi{C}fI31tlu[neoZ5Yxjya]2ESwqkP6h9d4VpOGbUAKXHm8RD#$Bg0MNWQ%&@";
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let args = Arguments::parse();
 
-    let img_reader = ImageReader::open(args.file_name)?;
+    let img = image::open(Path::new(&args.file_name))?;
 
-    let img = img_reader.decode()?;
+    let img_blur = img.blur(2.0).blur(0.75);
+
+    let mut img_blur = img_blur.pixels();
+
+    let edges: ImageBuffer<image::Rgb<u8>, _> = ImageBuffer::from_vec(img.width(), img.height(), img.blur(2.0).pixels().flat_map(|pix| {
+        let (_, _, image::Rgba([r1, g1, b1, _])) = img_blur.next().unwrap();
+        let (_, _, image::Rgba([r2, g2, b2, _])) = pix;
+
+        [r1 - r2, g1 - g2, b1 - b2]
+    }).collect()).unwrap();
+
+    let edges = DynamicImage::from(edges);
 
     let sample_width = args.sample_width;
     let sample_height = args.sample_height;
 
-    let img_width = img.width() as usize;
-    let img_height = img.height() as usize;
+    let depth = args.depth;
 
-    let block_width = usize::from(img_width.div_ceil(sample_width));
-    let block_height = usize::from(img_height.div_ceil(sample_height));
+    let img_width = img.width();
+    let img_height = img.height();
 
-    let mut image_blocks: Vec<Vec<Rgba<u8>>> = Vec::with_capacity(block_width * block_height);
+    let output_text_width = img_width.div_ceil(sample_width);
+    let output_text_height = img_height.div_ceil(sample_height);
 
-    for _ in 0..(block_height * block_width) {
-        image_blocks.push(vec![])
-    }
+    let output: String = (0..output_text_height).into_par_iter().flat_map(|y| {
+        // Get a reference to img so that it isn't moved inside the closure
+        let img = &img;
 
-    let pixels: Vec<Rgba<u8>> = img.pixels().map(|x| x.2).collect();
+        let edges = &edges;
 
-    let image_blocks = image_blocks.par_iter_mut().enumerate().map(|(idx, block)| {
-        let top_right = ((idx.div_floor(block_width) * img_width) + (idx * sample_width));
-        println!("{top_right}");
-        for y in 0..sample_height {
-            for x in 0..sample_width {
-                block.push(pixels[(top_right+x) + (y*img_width)]);
-            }
-        }
+        // Closure must be `move` because it may outlive `y`.
+        (0..output_text_width).into_par_iter().map(move |x| {
+            let sample = img.crop_imm(sample_width*x, sample_height*y, sample_width, sample_height);
+            let edge_sample = edges.crop_imm(sample_width*x, sample_height*y, sample_width, sample_height);
 
-        block
-    });
+            let [dominant, secondary] = dominant::two_most_dominant(sample.as_bytes()).map(|x| x.into_rgb());
 
-    // Get the average of each block
-    let img_avg: Vec<Rgb<u8>> = image_blocks.map(|pixels| {
-        let block_size = pixels.len();
-        let (mut r_total, mut g_total, mut b_total) = (0f64, 0f64, 0f64);
-        for pixel in pixels {
-            let [r, g, b, a]: [f64; 4] = pixel.0.map(|x| x as f64);
-            r_total += (r * (a/255.0)).powi(2);
-            g_total += (g * (a/255.0)).powi(2);
-            b_total += (b * (a/255.0)).powi(2);
-        }
-        r_total /= block_size as f64;
-        g_total /= block_size as f64;
-        b_total /= block_size as f64;
+            let (dominant_r, dominant_g, dominant_b) = match depth {
+                ColourDepth::Monochrome => {
+                    let monochrome = Monochrome::from_rgb8(dominant);
 
-        r_total = r_total.sqrt();
-        g_total = g_total.sqrt();
-        b_total = b_total.sqrt();
+                    monochrome.into_rgb()
+                }
+                ColourDepth::Rgb24 => {
+                    let true_color = Rgb24::from_rgb8(dominant);
 
-        Rgb([r_total as u8, g_total as u8, b_total as u8])
+                    true_color.into_rgb()
+                }
+                ColourDepth::Rgb16 => {
+                    let rgb16_color = Rgb565::from_rgb8(dominant);
+
+                    rgb16_color.into_rgb()
+                }
+                ColourDepth::Ansi => {
+                    let ansi_color = Ansi::from_rgb8(dominant);
+
+                    ansi_color.into_rgb()
+                }
+            };
+
+            let (secondary_r, secondary_g, secondary_b) = match depth {
+                ColourDepth::Monochrome => {
+                    let monochrome = Monochrome::from_rgb8(secondary);
+
+                    monochrome.into_rgb()
+                }
+                ColourDepth::Rgb24 => {
+                    let true_color = Rgb24::from_rgb8(secondary);
+
+                    true_color.into_rgb()
+                }
+                ColourDepth::Rgb16 => {
+                    let rgb16_color = Rgb565::from_rgb8(secondary);
+
+                    rgb16_color.into_rgb()
+                }
+                ColourDepth::Ansi => {
+                    let ansi_color = Ansi::from_rgb8(secondary);
+
+                    ansi_color.into_rgb()
+                }
+            };
+
+            let edge_sum: usize = edge_sample.pixels().count();
+            let edge_brightness: usize = edge_sample.pixels().fold(0usize, |acc, (_, _, x)| acc + x.to_luma().0[0] as usize);
+
+            let edge_avg = edge_brightness / edge_sum;
+
+            let edge_char_idx = (edge_avg as f64 / 255.0) * (EDGE_DETAIL.len() - 1) as f64;
+
+            let edge_char = EDGE_DETAIL[(edge_char_idx as usize).min(EDGE_DETAIL.len() - 1)] as char;
+
+            format!(
+                "{}{}",
+                edge_char
+                    .truecolor(secondary_r, secondary_g, secondary_b)
+                    .on_truecolor(dominant_r, dominant_g, dominant_b),
+                if x == output_text_width - 1 {
+                    '\n'
+                } else {
+                    '\x00'
+                }
+            )
+        })
     }).collect();
-
-    let mut output = String::with_capacity(block_width * block_height * 3);
-
-    for (idx, character) in img_avg.into_iter().enumerate() {
-        let [r, g, b] = character.0;
-
-        if idx % block_width == 0 {
-            output.push('\n');
-        }
-
-        output.push_str(
-            &format!("{}",
-                     '#'
-                         .on_truecolor(r, g, b)
-                         .truecolor(r / 2, g / 2, b / 2))
-        );
-    }
 
     println!("{output}");
 
