@@ -82,25 +82,25 @@ impl Colour for Rgb24 {
 
 impl Colour for Rgb565 {
     fn into_rgb(&self) -> (u8, u8, u8) {
-        let r_i = 0b1111100000000000 & self.rgb;
-        let g_i = (0b0000011111100000 & self.rgb) << 5;
-        let b_i = (0b0000000000011111 & self.rgb) << 11;
+        let r_i = 0b0000000000011111 & self.rgb;
+        let g_i = (0b0000011111100000 & self.rgb) >> 5;
+        let b_i = (0b1111100000000000 & self.rgb) >> 11;
 
-        // Converts RGB565 to RGB888, according to StackOverflow
-        let r = (r_i as usize * 527 + 23) >> 6;
-        let g = (g_i as usize * 259 + 33) >> 6;
-        let b = (b_i as usize * 527 + 23) >> 6;
+        let r = r_i as f64 * 8.22580645161;
+        let g = g_i as f64 * 4.04761904762;
+        let b = b_i as f64 * 8.22580645161;
 
         (r as u8, g as u8, b as u8)
     }
 
     fn from_rgb(colour: Rgb24) -> Self {
-        let r = (colour.r & 0b11111000) as u16;
-        let g = ((colour.g & 0b11111100) as u16) >> 5;
-        let b = (colour.b as u16) >> 11;
+        // Safety: value will never be NaN or Infinity, and u8 will always be smaller than u16.
+        let r: u16 = unsafe { (colour.r as f64 / 8.22580645161).to_int_unchecked::<u16>() & 0b0000000000011111 };
+        let g: u16 = unsafe { (colour.g as f64 / 4.04761904762).to_int_unchecked::<u16>() & 0b0000000000111111 };
+        let b: u16 = unsafe { (colour.b as f64 / 8.22580645161).to_int_unchecked::<u16>() & 0b0000000000011111 };
 
         Self {
-            rgb: r | g | b
+            rgb: r | g << 5 | b << 11
         }
     }
 }
