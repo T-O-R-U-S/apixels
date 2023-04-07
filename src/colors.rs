@@ -14,7 +14,7 @@ pub struct Rgb24 {
 
 #[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
 pub struct Monochrome {
-    pub brightness: u8
+    pub intensity: u8
 }
 
 #[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
@@ -112,14 +112,14 @@ impl Colour for Rgb565 {
 
 impl Colour for Monochrome {
     fn into_rgb(&self) -> (u8, u8, u8) {
-        (self.brightness, self.brightness, self.brightness)
+        (self.intensity, self.intensity, self.intensity)
     }
 
     fn from_rgb(colour: Rgb24) -> Self {
         let brightness = (colour.r as u16 + colour.g as u16 + colour.b as u16).div_floor(3);
 
         Monochrome {
-            brightness: brightness as u8
+            intensity: brightness as u8
         }
     }
 }
